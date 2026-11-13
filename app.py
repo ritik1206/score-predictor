@@ -8,159 +8,201 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-import plotly.figure_factory as ff
+from sklearn.metrics import accuracy_score, classification_report
 
 st.set_page_config(page_title="Cricket Analytics Pro", page_icon="🏏", layout="wide")
 st.title("🏏 Cricket Analytics Pro")
-st.caption("A Business Analytics application for IPL performance analysis and match-outcome estimation.")
+st.caption("Business Analytics dashboard | Team insights, player statistics and match outcome estimation")
 
 DATA_DIR = Path(__file__).parent / "data"
+
 @st.cache_data
-def load_default():
-    m = pd.read_csv(DATA_DIR / "sample_matches.csv")
-    d = pd.read_csv(DATA_DIR / "sample_deliveries.csv")
-    return m, d
+def read_default_data():
+    match_path = DATA_DIR / "sample_matches.csv"
+    ball_path = DATA_DIR / "sample_deliveries.csv"
+    if not match_path.exists() or not ball_path.exists():
+        raise FileNotFoundError("The data folder must contain sample_matches.csv and sample_deliveries.csv.")
+    return pd.read_csv(match_path), pd.read_csv(ball_path)
 
-def clean_columns(df):
-    df = df.copy()
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    return df
+def normalise_columns(frame):
+    frame = frame.copy()
+    frame.columns = [str(c).strip().lower().replace(" ", "_") for c in frame.columns]
+    return frame
 
-default_m, default_d = load_default()
-st.sidebar.header("Data input")
-match_file = st.sidebar.file_uploader("Upload match-level CSV (optional)", type=["csv"])
-ball_file = st.sidebar.file_uploader("Upload ball-by-ball CSV (optional)", type=["csv"])
-matches = clean_columns(pd.read_csv(match_file)) if match_file else default_m.copy()
-balls = clean_columns(pd.read_csv(ball_file)) if ball_file else default_d.copy()
-
-required_match = {"team1","team2","winner","venue"}
-if not required_match.issubset(matches.columns):
-    st.error("Match CSV must contain: team1, team2, winner, venue. See README for the expected schema.")
+try:
+    default_matches, default_balls = read_default_data()
+except Exception as exc:
+    st.error(f"Could not load bundled data: {exc}")
     st.stop()
-for c in ["team1","team2","winner","venue"]:
-    matches[c] = matches[c].astype(str)
-matches = matches.dropna(subset=["team1","team2","winner"])
-if "season" not in matches: matches["season"] = "All seasons"
-if "toss_winner" not in matches: matches["toss_winner"] = "Unknown"
-if "toss_decision" not in matches: matches["toss_decision"] = "Unknown"
 
-pages = ["Overview","Team Analytics","Player Analytics","Match Explorer","Match Prediction","About & Data Guide"]
-page = st.sidebar.radio("Navigate", pages)
+st.sidebar.header("Data")
+uploaded_matches = st.sidebar.file_uploader("Optional match CSV", type=["csv"], key="matches")
+uploaded_balls = st.sidebar.file_uploader("Optional ball-by-ball CSV", type=["csv"], key="balls")
+
+try:
+    matches = normalise_columns(pd.read_csv(uploaded_matches)) if uploaded_matches else default_matches.copy()
+    balls = normalise_columns(pd.read_csv(uploaded_balls)) if uploaded_balls else default_balls.copy()
+except Exception as exc:
+    st.error(f"Could not read uploaded CSV: {exc}")
+    st.stop()
+
+required_match_cols = {"team1", "team2", "winner", "venue"}
+missing = required_match_cols - set(matches.columns)
+if missing:
+    st.error("Match CSV is missing required columns: " + ", ".join(sorted(missing)))
+    st.stop()
+
+for col in ["team1", "team2", "winner", "venue"]:
+    matches[col] = matches[col].astype("string")
+matches = matches.dropna(subset=["team1", "team2", "winner", "venue"]).copy()
+if matches.empty:
+    st.error("No valid match rows remain after removing missing values.")
+    st.stop()
+
+for col, default in [("toss_winner", "Unknown"), ("toss_decision", "Unknown"), ("season", "Unknown")]:
+    if col not in matches.columns:
+        matches[col] = default
+    matches[col] = matches[col].fillna(default).astype(str)
+
+team_names = sorted(set(matches["team1"].astype(str)) | set(matches["team2"].astype(str)))
+page = st.sidebar.radio("Choose a module", [
+    "Overview", "Team Analytics", "Player Analytics",
+    "Match Explorer", "Match Prediction", "About"
+])
 
 if page == "Overview":
-    st.subheader("Tournament snapshot")
-    c1,c2,c3,c4 = st.columns(4)
+    st.subheader("Tournament overview")
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Matches", f"{len(matches):,}")
-    c2.metric("Teams", matches[["team1","team2"]].stack().nunique())
+    c2.metric("Teams", len(team_names))
     c3.metric("Venues", matches["venue"].nunique())
-    c4.metric("Most wins", matches["winner"].value_counts().index[0] if len(matches) else "—")
-    left,right = st.columns(2)
-    wins = matches["winner"].value_counts().rename_axis("Team").reset_index(name="Wins")
-    left.plotly_chart(px.bar(wins,x="Team",y="Wins",title="Wins by team", color="Wins"),use_container_width=True)
-    venue = matches["venue"].value_counts().rename_axis("Venue").reset_index(name="Matches")
-    right.plotly_chart(px.pie(venue,names="Venue",values="Matches",title="Matches by venue"),use_container_width=True)
-    if "season" in matches:
-        season = matches.groupby("season").size().reset_index(name="Matches")
-        st.plotly_chart(px.line(season,x="season",y="Matches",markers=True,title="Matches by season"),use_container_width=True)
+    c4.metric("Most wins", str(matches["winner"].value_counts().index[0]))
+    win_counts = matches["winner"].value_counts().rename_axis("Team").reset_index(name="Wins")
+    venue_counts = matches["venue"].value_counts().rename_axis("Venue").reset_index(name="Matches")
+    left, right = st.columns(2)
+    left.plotly_chart(px.bar(win_counts, x="Team", y="Wins", title="Wins by team"), use_container_width=True)
+    right.plotly_chart(px.pie(venue_counts, names="Venue", values="Matches", title="Matches by venue"), use_container_width=True)
+    st.caption("Bundled data is synthetic demonstration data.")
 
 elif page == "Team Analytics":
     st.subheader("Team performance")
-    team_list = sorted(set(matches.team1).union(matches.team2))
-    selected = st.selectbox("Select a team",team_list)
-    played = matches[(matches.team1==selected)|(matches.team2==selected)]
-    wins = int((played.winner==selected).sum())
-    losses = int(len(played)-wins)
-    a,b,c = st.columns(3)
-    a.metric("Matches played",len(played)); b.metric("Wins",wins); c.metric("Win rate",f"{wins/len(played)*100:.1f}%" if len(played) else "—")
-    venue_wins = played[played.winner==selected].groupby("venue").size().reset_index(name="Wins")
-    st.plotly_chart(px.bar(venue_wins,x="venue",y="Wins",title=f"{selected}: wins by venue"),use_container_width=True)
-    summary = pd.DataFrame({"Metric":["Matches","Wins","Losses","Win rate (%)"],"Value":[len(played),wins,losses,round(wins/len(played)*100,1) if len(played) else 0]})
-    st.dataframe(summary,use_container_width=True,hide_index=True)
+    team = st.selectbox("Select team", team_names)
+    played = matches[(matches["team1"] == team) | (matches["team2"] == team)]
+    wins = int((played["winner"] == team).sum())
+    total = len(played)
+    a, b, c = st.columns(3)
+    a.metric("Matches played", total)
+    b.metric("Wins", wins)
+    c.metric("Win rate", f"{wins / total * 100:.1f}%" if total else "N/A")
+    venue_wins = (played[played["winner"] == team]
+                  .groupby("venue").size().reset_index(name="Wins"))
+    if not venue_wins.empty:
+        st.plotly_chart(px.bar(venue_wins, x="venue", y="Wins", title=f"{team}: wins by venue"), use_container_width=True)
+    else:
+        st.info("No wins found for this team in the selected data.")
 
 elif page == "Player Analytics":
-    st.subheader("Player performance")
-    needed = {"batter","bowler","batsman_runs","is_wicket"}
-    if not needed.issubset(balls.columns):
-        st.warning("Player analytics needs ball-by-ball columns: batter, bowler, batsman_runs, is_wicket. Upload a compatible file or use the bundled demo.")
+    st.subheader("Player statistics")
+    required_ball_cols = {"batter", "bowler", "batsman_runs", "is_wicket", "total_runs"}
+    missing_ball = required_ball_cols - set(balls.columns)
+    if missing_ball:
+        st.warning("Ball-by-ball CSV is missing: " + ", ".join(sorted(missing_ball)))
     else:
-        bat = balls.groupby("batter").agg(Runs=("batsman_runs","sum"), Balls=("batsman_runs","count")).reset_index()
-        bat["Strike Rate"] = (bat.Runs / bat.Balls * 100).round(2)
-        bat = bat.sort_values("Runs",ascending=False).head(15)
-        bowl = balls.groupby("bowler").agg(Wickets=("is_wicket","sum"), Runs_Conceded=("total_runs","sum"), Balls=("total_runs","count")).reset_index()
-        bowl["Economy"] = (bowl.Runs_Conceded / (bowl.Balls/6)).round(2)
-        bowl = bowl.sort_values("Wickets",ascending=False).head(15)
-        x,y = st.columns(2)
-        x.plotly_chart(px.bar(bat,x="batter",y="Runs",title="Top run scorers"),use_container_width=True)
-        y.plotly_chart(px.bar(bowl,x="bowler",y="Wickets",title="Top wicket takers"),use_container_width=True)
-        st.markdown("**Batting leaderboard**"); st.dataframe(bat,use_container_width=True,hide_index=True)
-        st.markdown("**Bowling leaderboard**"); st.dataframe(bowl,use_container_width=True,hide_index=True)
+        for col in ["batsman_runs", "is_wicket", "total_runs"]:
+            balls[col] = pd.to_numeric(balls[col], errors="coerce").fillna(0)
+        batting = (balls.groupby("batter")
+                   .agg(Runs=("batsman_runs", "sum"), Balls=("batsman_runs", "count"))
+                   .reset_index())
+        batting["Strike Rate"] = (batting["Runs"] / batting["Balls"].replace(0, np.nan) * 100).round(2)
+        bowling = (balls.groupby("bowler")
+                   .agg(Wickets=("is_wicket", "sum"), Runs=("total_runs", "sum"),
+                        Balls=("total_runs", "count")).reset_index())
+        bowling["Economy (approx.)"] = (bowling["Runs"] / (bowling["Balls"] / 6).replace(0, np.nan)).round(2)
+        x, y = st.columns(2)
+        x.plotly_chart(px.bar(batting.nlargest(10, "Runs"), x="batter", y="Runs", title="Top 10 run scorers"), use_container_width=True)
+        y.plotly_chart(px.bar(bowling.nlargest(10, "Wickets"), x="bowler", y="Wickets", title="Top 10 wicket takers"), use_container_width=True)
+        st.write("Batting leaderboard")
+        st.dataframe(batting.sort_values("Runs", ascending=False), use_container_width=True, hide_index=True)
+        st.write("Bowling leaderboard")
+        st.dataframe(bowling.sort_values("Wickets", ascending=False), use_container_width=True, hide_index=True)
+        st.caption("Economy is approximate in this demo. Real data needs correct legal-ball and extras handling.")
 
 elif page == "Match Explorer":
-    st.subheader("Explore historical matches")
-    teams_all = sorted(set(matches.team1).union(matches.team2))
-    filt = st.selectbox("Filter by team",["All teams"]+teams_all)
-    view = matches if filt=="All teams" else matches[(matches.team1==filt)|(matches.team2==filt)]
-    st.dataframe(view.sort_values("date",ascending=False) if "date" in view else view,use_container_width=True,hide_index=True)
-    if len(view):
-        st.info(f"Displayed {len(view)} match records.")
+    st.subheader("Historical match explorer")
+    selected_team = st.selectbox("Filter by team", ["All teams"] + team_names)
+    view = matches if selected_team == "All teams" else matches[
+        (matches["team1"] == selected_team) | (matches["team2"] == selected_team)
+    ]
+    st.dataframe(view, use_container_width=True, hide_index=True)
+    st.write(f"Records displayed: {len(view)}")
 
 elif page == "Match Prediction":
-    st.subheader("Predict a match outcome")
-    st.write("This model learns from historical match records. It is an educational estimate, not a betting tool or guarantee.")
-    feature_cols = ["team1","team2","venue","toss_winner","toss_decision"]
-    train = matches.dropna(subset=["winner"]).copy()
-    train = train[train["winner"].isin(set(train.team1).union(train.team2))]
-    if len(train)<20 or train["winner"].nunique()<2:
-        st.error("At least 20 labelled historical matches and two winner classes are required.")
+    st.subheader("Match outcome estimation")
+    st.info("Educational estimate only. Not a guaranteed result. Model quality depends on the quality and size of historical data.")
+    feature_cols = ["team1", "team2", "venue", "toss_winner", "toss_decision"]
+    model_data = matches.dropna(subset=["winner"]).copy()
+    model_data = model_data[model_data["winner"].isin(team_names)]
+    if len(model_data) < 20 or model_data["winner"].nunique() < 2:
+        st.error("Prediction requires at least 20 labelled matches and at least two winner classes.")
     else:
-        X=train[feature_cols].fillna("Unknown").astype(str)
-        y=train["winner"].astype(str)
-        strat = y if y.value_counts().min() >= 2 else None
-        Xtr,Xte,ytr,yte=train_test_split(X,y,test_size=.25,random_state=42,stratify=strat)
-        prep=ColumnTransformer([("cat",OneHotEncoder(handle_unknown="ignore"),feature_cols)])
-        model=Pipeline([("prep",prep),("rf",RandomForestClassifier(n_estimators=250,max_depth=8,min_samples_leaf=2,class_weight="balanced",random_state=42))])
-        model.fit(Xtr,ytr)
-        pred=model.predict(Xte)
-        acc=accuracy_score(yte,pred)
-        st.metric("Hold-out accuracy",f"{acc*100:.1f}%")
-        st.caption("Accuracy is measured on a held-out portion of the available dataset. It will vary with dataset size, seasons and data quality.")
-        c1,c2=st.columns(2)
-        teams_sorted=sorted(set(train.team1).union(train.team2))
-        team1=c1.selectbox("Team 1",teams_sorted,index=0)
-        team2=c2.selectbox("Team 2",teams_sorted,index=min(1,len(teams_sorted)-1))
-        venue=c1.selectbox("Venue",sorted(train.venue.unique()))
-        toss_winner=c2.selectbox("Toss winner",[team1,team2])
-        toss_decision=st.radio("Toss decision",["bat","field"],horizontal=True)
-        if st.button("Estimate match winner",type="primary"):
-            if team1==team2:
-                st.error("Choose two different teams.")
-            else:
-                row=pd.DataFrame([{"team1":team1,"team2":team2,"venue":venue,"toss_winner":toss_winner,"toss_decision":toss_decision}])
-                proba=model.predict_proba(row)[0]
-                classes=model.named_steps["rf"].classes_
-                order=np.argsort(proba)[::-1]
-                top=classes[order[0]]
-                st.success(f"Model estimate: **{top}**")
-                probs=pd.DataFrame({"Team":classes,"Estimated probability":proba})
-                st.plotly_chart(px.bar(probs.sort_values("Estimated probability",ascending=False),x="Team",y="Estimated probability",title="Model class probabilities"),use_container_width=True)
-        with st.expander("Model evaluation details"):
-            st.write("Accuracy:",round(acc,3))
-            st.text(classification_report(yte,pred,zero_division=0))
-            labels=sorted(y.unique())
-            cm=confusion_matrix(yte,pred,labels=labels)
-            st.dataframe(pd.DataFrame(cm,index=labels,columns=labels),use_container_width=True)
+        X = model_data[feature_cols].fillna("Unknown").astype(str)
+        y = model_data["winner"].astype(str)
+        stratify_y = y if y.value_counts().min() >= 2 else None
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, random_state=42, stratify=stratify_y
+        )
+        prep = ColumnTransformer([
+            ("categorical", OneHotEncoder(handle_unknown="ignore"), feature_cols)
+        ])
+        model = Pipeline([
+            ("preprocessor", prep),
+            ("classifier", RandomForestClassifier(
+                n_estimators=250, max_depth=8, min_samples_leaf=2,
+                class_weight="balanced", random_state=42
+            ))
+        ])
+        model.fit(X_train, y_train)
+        test_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, test_pred)
+        st.metric("Hold-out accuracy", f"{accuracy * 100:.1f}%")
+        st.caption("Random split score on the currently loaded data; for a serious evaluation, use chronological season-based testing.")
+        col1, col2 = st.columns(2)
+        team1 = col1.selectbox("Team 1", team_names, key="pred_team1")
+        team2_options = [t for t in team_names if t != team1]
+        team2 = col2.selectbox("Team 2", team2_options, key="pred_team2")
+        venue_options = sorted(matches["venue"].dropna().astype(str).unique())
+        venue = col1.selectbox("Venue", venue_options)
+        toss_winner = col2.selectbox("Toss winner", [team1, team2])
+        toss_decision = st.radio("Toss decision", ["bat", "field"], horizontal=True)
+        if st.button("Predict match outcome", type="primary"):
+            input_row = pd.DataFrame([{
+                "team1": team1, "team2": team2, "venue": venue,
+                "toss_winner": toss_winner, "toss_decision": toss_decision
+            }])
+            predicted = model.predict(input_row)[0]
+            probabilities = model.predict_proba(input_row)[0]
+            classes = model.named_steps["classifier"].classes_
+            st.success(f"Model's estimated winner: {predicted}")
+            probability_df = pd.DataFrame({
+                "Team": classes, "Estimated probability": probabilities
+            }).sort_values("Estimated probability", ascending=False)
+            st.plotly_chart(px.bar(probability_df, x="Team", y="Estimated probability",
+                                   title="Estimated class probabilities"), use_container_width=True)
+        with st.expander("View model evaluation report"):
+            st.text(classification_report(y_test, test_pred, zero_division=0))
 
 else:
-    st.subheader("About this application")
+    st.subheader("About this project")
     st.markdown("""
-    **Purpose:** Demonstrate how Business Analytics can turn cricket records into actionable summaries.
+    **Project:** Cricket Analytics Pro — Business Analytics group application.
 
-    **Workflow:** Data upload → cleaning → exploratory analysis → feature preparation → model training → evaluation → prediction.
+    **Workflow:** Data loading → validation → descriptive analytics → model training → evaluation → prediction.
 
-    **Important:** Bundled sample data is synthetic and created only to demonstrate the application. Replace it with a verified, licensed historical IPL dataset before making real-world claims.
+    **Demo data:** The bundled CSV files are synthetic and are included only so the project runs immediately. Replace them with verified, appropriately licensed historical IPL data before making factual claims about real teams or players.
 
-    **Expected match CSV columns:** `team1, team2, winner, venue`; optional: `season, toss_winner, toss_decision, date`.
+    **Required match CSV columns:** `team1`, `team2`, `winner`, `venue`.
 
-    **Expected ball-by-ball CSV columns:** `batter, bowler, batsman_runs, is_wicket`; optional: `total_runs, match_id, inning, over, ball`.
+    **Required ball-by-ball CSV columns:** `batter`, `bowler`, `batsman_runs`, `is_wicket`, `total_runs`.
+
+    **Model:** Random Forest classifier using team, venue and toss fields. The actual match winner is the target and must never be included among input features.
     """)
